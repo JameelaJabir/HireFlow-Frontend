@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(find E: -path */interview-service/* -name *.java)",
-      "Bash(echo \"$VITE_COMPANY_API_URL\")",
-      "Bash(cmd /c \"echo %VITE_COMPANY_API_URL%\")"
-    ]
-  }
-}
