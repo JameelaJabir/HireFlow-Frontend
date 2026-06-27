@@ -1,12 +1,18 @@
 # HireFlow — Frontend
 
-Vue 3 single-page application for the HireFlow recruitment platform. Supports two user roles — **Employer** and **Candidate** — each with a dedicated dashboard and feature set.
+> Vue 3 SPA for the HireFlow job recruitment platform | SE4010 Cloud Computing Assignment | SLIIT 2026
+
+A single-page application serving two user roles — **Employer** and **Candidate** — each with a dedicated dashboard, connected to five backend microservices via REST. Deployed on Google Cloud Run using Docker + Nginx.
 
 ---
 
 ## Table of Contents
 
 - [Tech Stack](#tech-stack)
+- [Architecture](#architecture)
+- [Cloud Deployment](#cloud-deployment)
+- [CI/CD Pipeline](#cicd-pipeline)
+- [DevSecOps — SonarCloud](#devsecops--sonarcloud)
 - [Prerequisites](#prerequisites)
 - [Getting Started](#getting-started)
 - [Environment Variables](#environment-variables)
@@ -45,20 +51,103 @@ Vue 3 single-page application for the HireFlow recruitment platform. Supports tw
 
 ---
 
+## Architecture
+
+The frontend communicates directly with each backend microservice via dedicated Axios clients. There is no API gateway — each service is called by its own environment variable URL.
+
+```
+HireFlow Frontend (Vue 3 SPA)
+│
+├── api.ts          ──►  Auth Service        :8081
+├── jobApi.ts       ──►  Job Listing Service :3002
+├── cvApi.ts        ──►  CV Service          :8085
+├── interviewApi.ts ──►  Interview Service   :3090
+├── pipelineApi.ts  ──►  Interview Service   :3090  (pipelines)
+└── companyApi.ts   ──►  Profile Service     :8080
+```
+
+JWT tokens issued by the Auth Service are attached to every outbound request via an Axios request interceptor.
+
+---
+
+## Cloud Deployment
+
+The frontend is containerized and deployed to **Google Cloud Run** as a static site served by Nginx.
+
+- **Container**: Node 22 (build stage) + Nginx Alpine (serve stage)
+- **Port**: 8080 (Nginx listens on 8080; Cloud Run forwards traffic here)
+- **Container Registry**: GCP Artifact Registry
+- **SPA Routing**: Nginx `try_files` falls back to `index.html` for all routes (Vue Router history mode)
+- **Caching**: Static assets cached 1 year with `immutable`; `index.html` is never cached
+
+---
+
+## CI/CD Pipeline
+
+### Deploy Workflow (`.github/workflows/deploy.yml`)
+
+Triggers on every push to `main`:
+
+```
+Push to main
+    │
+    ├── Checkout code
+    ├── Authenticate to GCP (Service Account key)
+    ├── Configure Docker → Artifact Registry
+    ├── Build Docker image (tagged :sha + :latest)
+    ├── Push image to Artifact Registry
+    └── Deploy to Cloud Run (--allow-unauthenticated --port=8080)
+```
+
+### SonarCloud Workflow (`.github/workflows/sonar.yml`)
+
+Triggers on push to `main`/`develop` and on pull requests:
+
+```
+Push / PR
+    │
+    ├── Checkout (full history)
+    ├── Set up Node.js 22
+    ├── npm ci
+    ├── npm run test:cov  (Vitest with v8 coverage)
+    └── SonarCloud scan (SonarSource/sonarqube-scan-action)
+```
+
+### Required GitHub Secrets
+
+| Secret | Description |
+|---|---|
+| `GCP_PROJECT_ID` | GCP project ID |
+| `GCP_SA_KEY` | GCP Service Account JSON key |
+| `GCP_REGION` | Cloud Run region (e.g. `asia-east1`) |
+| `GCP_ARTIFACT_REPO` | Artifact Registry repo name (e.g. `hireflow`) |
+| `SONAR_TOKEN` | SonarCloud token |
+
+---
+
+## DevSecOps — SonarCloud
+
+SonarCloud is integrated via GitHub Actions. On every push and pull request:
+
+1. Vitest runs with v8 coverage
+2. Results are submitted to SonarCloud for static analysis
+3. Reports: bugs, vulnerabilities, code smells, coverage %, security hotspots
+
+Configuration is in `sonar-project.properties` at the repo root.
+
+---
+
 ## Prerequisites
 
 - Node.js 18+
 - npm 9+
-- All backend microservices running (see [Backend README](../Backend/README.md))
+- All backend microservices running (see [Backend README](../HireFlow-Backend/README.md))
 
 ---
 
 ## Getting Started
 
 ```bash
-# Navigate to the frontend directory
-cd frotend
-
 # Install dependencies
 npm install
 
@@ -66,7 +155,7 @@ npm install
 npm run dev
 ```
 
-### All Available Scripts
+### Available Scripts
 
 | Command | Description |
 |---|---|
@@ -82,52 +171,56 @@ npm run dev
 
 ## Environment Variables
 
-Create a `.env` file in the `frotend/` directory. An `.env.example` file is provided as a reference.
+Create a `.env` file in the project root. Reference `.env.example` for the template.
 
 ```env
 VITE_AUTH_API_URL=http://localhost:8081
-VITE_JOB_API_URL=http://localhost:3090
-VITE_INTERVIEW_API_URL=http://localhost:3000
+VITE_JOB_API_URL=http://localhost:3002
+VITE_INTERVIEW_API_URL=http://localhost:3090
 VITE_COMPANY_API_URL=http://localhost:8080/api
 VITE_CV_API_URL=http://localhost:8085
 ```
 
-All variables are prefixed with `VITE_` and accessed in code via `import.meta.env.VITE_*`.
+All variables are prefixed with `VITE_` and accessed via `import.meta.env.VITE_*`.
 
-For production, duplicate to `.env.production` and replace localhost URLs with your deployed service URLs.
+For production, create `.env.production` and replace localhost URLs with your deployed Cloud Run service URLs.
 
 ---
 
 ## Project Structure
 
 ```
-frotend/
-├── public/                         # Static assets served as-is
+HireFlow-Frontend/
+├── .github/
+│   └── workflows/
+│       ├── deploy.yml           # GCP Cloud Run deployment
+│       └── sonar.yml            # SonarCloud SAST
+├── public/                      # Static assets served as-is
 ├── src/
-│   ├── main.ts                     # App entry point — mounts Vue, registers Pinia & Router
-│   ├── App.vue                     # Root component — hosts <RouterView> and <Toaster>
-│   ├── constants.ts                # Shared enums (UserRole, HiringStage, etc.) and route names
+│   ├── main.ts                  # App entry — mounts Vue, Pinia, Router
+│   ├── App.vue                  # Root component — <RouterView> + <Toaster>
+│   ├── constants.ts             # Shared enums (UserRole, HiringStage, etc.)
 │   │
 │   ├── router/
-│   │   └── index.ts                # Route definitions and navigation guards
+│   │   └── index.ts             # Route definitions and navigation guards
 │   │
-│   ├── stores/                     # Pinia stores (one per domain)
-│   │   ├── auth.ts                 # Session, tokens, user identity
-│   │   ├── jobs.ts                 # Job listings (employer & public)
-│   │   ├── interview.ts            # Interview scheduling
-│   │   ├── pipeline.ts             # Hiring pipeline progression
-│   │   ├── company.ts              # Company profiles & analytics
-│   │   └── cv.ts                   # Candidate CV & applications
+│   ├── stores/                  # Pinia stores (one per domain)
+│   │   ├── auth.ts              # Session, tokens, user identity
+│   │   ├── jobs.ts              # Job listings (employer & public)
+│   │   ├── interview.ts         # Interview scheduling
+│   │   ├── pipeline.ts          # Hiring pipeline progression
+│   │   ├── company.ts           # Company profiles & analytics
+│   │   └── cv.ts                # Candidate CV & applications
 │   │
-│   ├── services/                   # Axios API clients (one per microservice)
-│   │   ├── api.ts                  # Auth service client + shared request interceptor
-│   │   ├── jobApi.ts               # Job Listing Service client
-│   │   ├── interviewApi.ts         # Interview Service client
-│   │   ├── pipelineApi.ts          # Hiring Pipeline endpoints (Interview Service)
-│   │   ├── companyApi.ts           # Profile Service client
-│   │   └── cvApi.ts                # CV Service client
+│   ├── services/                # Axios API clients (one per microservice)
+│   │   ├── api.ts               # Auth service client + shared JWT interceptor
+│   │   ├── jobApi.ts            # Job Listing Service client
+│   │   ├── interviewApi.ts      # Interview Service client
+│   │   ├── pipelineApi.ts       # Hiring Pipeline endpoints
+│   │   ├── companyApi.ts        # Profile Service client
+│   │   └── cvApi.ts             # CV Service client
 │   │
-│   ├── views/                      # Page-level components (matched to routes)
+│   ├── views/                   # Page-level components (matched to routes)
 │   │   ├── HomeView.vue
 │   │   ├── auth/
 │   │   │   ├── LoginView.vue
@@ -150,65 +243,72 @@ frotend/
 │   │       └── CompanyDetailsView.vue
 │   │
 │   ├── components/
-│   │   ├── ui/                     # Headless, reusable design-system components
+│   │   ├── ui/                  # Headless design-system components (Reka UI)
 │   │   ├── layout/
-│   │   │   ├── AppShell.vue        # Authenticated layout (sidebar + header + slot)
-│   │   │   └── AppSidebar.vue      # Role-aware sidebar navigation
+│   │   │   ├── AppShell.vue     # Authenticated layout (sidebar + header)
+│   │   │   └── AppSidebar.vue   # Role-aware sidebar navigation
 │   │   ├── jobs/
-│   │   │   └── JobForm.vue         # Create / edit job form
+│   │   │   └── JobForm.vue      # Create/edit job form
 │   │   ├── interview/
-│   │   │   └── InterviewTable.vue  # Interview list table
+│   │   │   └── InterviewTable.vue
 │   │   ├── pipeline/
-│   │   │   ├── HiringStageProgress.vue  # Visual stage progress bar
-│   │   │   └── PipelineRow.vue          # Single pipeline row
-│   │   ├── icons/                  # Custom SVG icon components
-│   │   └── ModeToggle.vue          # Dark / light theme toggle
+│   │   │   ├── HiringStageProgress.vue
+│   │   │   └── PipelineRow.vue
+│   │   ├── icons/               # Custom SVG icon components
+│   │   └── ModeToggle.vue       # Dark/light theme toggle
 │   │
-│   ├── types/                      # TypeScript interfaces
-│   │   ├── interview.ts            # Interview, HiringPipeline, HiringStage types
-│   │   └── cv.ts                   # CandidateProfile, WorkExperience, Education types
+│   ├── types/                   # TypeScript interfaces
+│   │   ├── interview.ts
+│   │   └── cv.ts
 │   │
 │   ├── lib/
-│   │   └── utils.ts                # cn() — Tailwind class merging (clsx + tailwind-merge)
+│   │   └── utils.ts             # cn() — Tailwind class merging utility
 │   │
 │   └── assets/
-│       ├── main.css                # Global CSS — design tokens, dark mode, typography
-│       └── base.css                # CSS reset and base styles
+│       ├── main.css             # Design tokens, dark mode, typography
+│       └── base.css             # CSS reset and base styles
 │
-├── .env                            # Development environment variables
-├── .env.example                    # Reference template
-├── .env.production                 # Production environment variables
-├── vite.config.ts                  # Vite configuration
-├── vitest.config.ts                # Vitest test configuration
-├── tsconfig.json                   # TypeScript configuration
+├── .env                         # Development environment variables
+├── .env.example                 # Reference template
+├── .env.production              # Production environment variables
+├── sonar-project.properties     # SonarCloud configuration
+├── vite.config.ts               # Vite configuration
+├── vitest.config.ts             # Vitest test configuration
+├── tsconfig.json                # TypeScript configuration
+├── nginx.conf                   # Nginx SPA config for production container
+├── Dockerfile                   # Multi-stage build (Node → Nginx)
 ├── package.json
-├── Dockerfile                      # Container build
-├── nginx.conf                      # Nginx config for serving SPA in production
-└── index.html                      # HTML entry point
+└── index.html                   # HTML entry point
 ```
 
 ---
 
 ## Routes & Pages
 
-Route guards are applied globally. Routes with `meta.requiresAuth` redirect unauthenticated users to `/login`. Routes with `meta.guest` redirect authenticated users to their role dashboard. Role-specific routes check `meta.role` and redirect on mismatch.
+Route guards are applied globally via `router/index.ts`.
+
+| Guard | Behaviour |
+|---|---|
+| `meta.requiresAuth` | Redirects unauthenticated users to `/login` |
+| `meta.guest` | Redirects authenticated users to their role dashboard |
+| `meta.role` | Redirects users to their own dashboard if role doesn't match |
 
 ### Guest Routes
 
 | Path | Component | Description |
 |---|---|---|
 | `/login` | `LoginView` | Email + password login |
-| `/register` | `RegisterView` | Account creation with role selection (Employer / Candidate) |
+| `/register` | `RegisterView` | Account creation with role selection |
 
 ### Employer Routes — requires `role: EMPLOYER`
 
 | Path | Component | Description |
 |---|---|---|
-| `/employer/dashboard` | `EmployerDashboardView` | Stats overview, quick actions, recent activity |
+| `/employer/dashboard` | `EmployerDashboardView` | Stats overview and recent activity |
 | `/employer/jobs` | `EmployerJobsView` | Create, edit, and close job postings |
-| `/employer/jobs/:jobId/applications` | `EmployerJobApplicationsView` | Review applications for a specific job |
+| `/employer/jobs/:jobId/applications` | `EmployerJobApplicationsView` | Review applications for a job |
 | `/employer/pipelines` | `PipelinesView` | All active hiring pipelines |
-| `/employer/pipelines/:id` | `PipelineDetailView` | Manage a single pipeline, advance candidates through stages |
+| `/employer/pipelines/:id` | `PipelineDetailView` | Manage a pipeline, advance stages |
 | `/employer/interviews` | `InterviewsView` | Schedule and manage interviews |
 | `/employer/company` | `CompanyProfileView` | Company info, logo upload, analytics |
 
@@ -216,23 +316,21 @@ Route guards are applied globally. Routes with `meta.requiresAuth` redirect unau
 
 | Path | Component | Description |
 |---|---|---|
-| `/candidate/dashboard` | `CandidateDashboardView` | Application status summary, upcoming interviews |
-| `/candidate/jobs` | `CandidateJobBoardView` | Browse and search open jobs, submit applications |
-| `/candidate/interviews` | `CandidateInterviewsView` | View scheduled interviews, accept or decline |
-| `/candidate/pipeline` | `CandidatePipelineView` | Track application progress across all applied jobs |
-| `/candidate/cv-profile` | `CandidateCvProfileView` | Manage CV: bio, skills, work history, education, resume upload |
+| `/candidate/dashboard` | `CandidateDashboardView` | Application summary and upcoming interviews |
+| `/candidate/jobs` | `CandidateJobBoardView` | Browse and apply to open jobs |
+| `/candidate/interviews` | `CandidateInterviewsView` | View and respond to interview invitations |
+| `/candidate/pipeline` | `CandidatePipelineView` | Track application progress |
+| `/candidate/cv-profile` | `CandidateCvProfileView` | Manage CV: skills, experience, resume upload |
 | `/candidate/companies` | `ExploreCompaniesView` | Browse and follow companies |
-| `/candidate/companies/:id` | `CompanyDetailsView` | Company detail page with open positions |
+| `/candidate/companies/:id` | `CompanyDetailsView` | Company detail with open positions |
 
 ---
 
 ## State Management
 
-Pinia stores follow the Composition API `defineStore()` pattern. All stores are in `src/stores/`.
+Pinia stores use the Composition API `defineStore()` pattern. All stores are in `src/stores/`. Auth state is persisted to `localStorage`.
 
-### `useAuthStore` — `stores/auth.ts`
-
-Manages the active session. State is persisted to `localStorage`.
+### `useAuthStore`
 
 | State | Type | Description |
 |---|---|---|
@@ -263,43 +361,73 @@ Manages the active session. State is persisted to `localStorage`.
 | `currentJob` | Single job detail |
 | `loading` / `error` | Request status |
 
-Actions: `fetchMyJobs`, `createJob`, `updateJob`, `closeJob`, `fetchOpenJobs`, `searchJobs`, `fetchJobById`
+| Action | Description |
+|---|---|
+| `fetchOpenJobs()` | Load all open jobs for candidate job board |
+| `searchJobs(query)` | Filter jobs by title, location, skills |
+| `fetchJobById(id)` | Load a single job's details |
+| `fetchMyJobs()` | Load employer's own job postings |
+| `createJob(dto)` | Post a new job |
+| `updateJob(id, dto)` | Edit an existing job |
+| `closeJob(id)` | Close a job posting |
 
 ### `useInterviewStore` — `stores/interview.ts`
 
-Actions: `fetchForEmployer`, `fetchForCandidate`, `schedule`, `update`, `cancel`, `accept`, `decline`
+| Action | Description |
+|---|---|
+| `fetchForEmployer()` | Load all interviews scheduled by the employer |
+| `fetchForCandidate()` | Load all interviews for the candidate |
+| `schedule(dto)` | Schedule a new interview |
+| `update(id, dto)` | Update interview details |
+| `cancel(id)` | Cancel an interview |
+| `accept(id)` | Accept an interview invitation |
+| `decline(id)` | Decline an interview invitation |
 
 ### `usePipelineStore` — `stores/pipeline.ts`
 
-Actions: `fetchForEmployer`, `fetchForCandidate`, `advanceStage`
+| Action | Description |
+|---|---|
+| `fetchForEmployer()` | Load all hiring pipelines for the employer |
+| `fetchForCandidate()` | Load own pipeline status across all applications |
+| `advanceStage(id, stage)` | Move a candidate to the next hiring stage |
 
 ### `useCompanyStore` — `stores/company.ts`
 
-Actions: `fetchAllCompanies`, `fetchCompanyById`, `search`, `fetchAnalytics`, `follow`, `unfollow`, `fetchByEmployee`, `createCompany`, `updateCompany`, `deleteCompany`
+| Action | Description |
+|---|---|
+| `fetchAllCompanies()` | Load all companies for candidate explore view |
+| `fetchCompanyById(id)` | Load a single company's profile |
+| `search(query)` | Search companies by name, industry, or location |
+| `fetchByEmployee(employeeId)` | Load company by the employer's user ID |
+| `fetchAnalytics(id)` | Load company analytics (views, followers, applications) |
+| `createCompany(formData)` | Create a new company profile with logo |
+| `updateCompany(id, formData)` | Update company profile |
+| `deleteCompany(id)` | Delete a company profile |
+| `follow(id)` | Follow a company |
+| `unfollow(id)` | Unfollow a company |
 
 ### `useCvStore` — `stores/cv.ts`
 
-Actions: `fetchMyProfile`, `upsertProfile`, `uploadResume`
+| Action | Description |
+|---|---|
+| `fetchMyProfile()` | Load own CV profile (bio, skills, experience, education) |
+| `upsertProfile(dto)` | Create or update CV profile |
+| `uploadResume(file)` | Upload a resume PDF to Azure Blob Storage |
 
-Includes profile normalization to ensure consistent data shape before rendering.
+Profile data is normalised before being stored to ensure a consistent shape regardless of which fields the server returns.
 
 ---
 
 ## API Integration
 
-Each backend microservice has a dedicated Axios client in `src/services/`. Every instance attaches the JWT token automatically via a request interceptor.
-
-```ts
-// Applied to all Axios instances
-config.headers.Authorization = `Bearer ${localStorage.getItem('token')}`
-```
+Each microservice has a dedicated Axios client in `src/services/`. A shared request interceptor attaches the JWT from `localStorage` to every request.
 
 | File | Env Var | Target Service |
 |---|---|---|
 | `api.ts` | `VITE_AUTH_API_URL` | Auth Service `:8081` |
-| `jobApi.ts` | `VITE_JOB_API_URL` | Job Listing Service `:3090` |
-| `interviewApi.ts` | `VITE_INTERVIEW_API_URL` | Interview Service `:3000` |
-| `pipelineApi.ts` | `VITE_INTERVIEW_API_URL` | Interview Service `:3000` (pipelines) |
+| `jobApi.ts` | `VITE_JOB_API_URL` | Job Listing Service `:3002` |
+| `interviewApi.ts` | `VITE_INTERVIEW_API_URL` | Interview Service `:3090` |
+| `pipelineApi.ts` | `VITE_INTERVIEW_API_URL` | Interview Service `:3090` (pipelines) |
 | `companyApi.ts` | `VITE_COMPANY_API_URL` | Profile Service `:8080/api` |
 | `cvApi.ts` | `VITE_CV_API_URL` | CV Service `:8085` |
 
@@ -319,38 +447,31 @@ POST /api/auth/register  or  /api/auth/login
 Response: { accessToken, refreshToken, userId, name, role }
     │
     ▼
-Store in localStorage + populate useAuthStore
+Stored in localStorage + useAuthStore populated
     │
     ▼
-Router redirects to role-specific dashboard
+Router redirects to role dashboard
 (/employer/dashboard  or  /candidate/dashboard)
     │
     ▼
-All subsequent API requests auto-attach Bearer token (interceptor)
+All API requests auto-attach Bearer token via Axios interceptor
     │
     ▼
-Logout → POST /api/auth/logout → clear localStorage → redirect to /login
+Logout → POST /api/auth/logout → clear localStorage → redirect /login
 ```
-
-**Route guard logic (`router/index.ts`):**
-
-1. `requiresAuth` — redirect unauthenticated users to `/login`
-2. `guest` — redirect authenticated users away from login/register to their dashboard
-3. `meta.role` — redirect users who don't match the required role to their own dashboard
 
 ---
 
 ## Component Library
 
-Reusable UI components live in `src/components/ui/` and are built on [Reka UI](https://reka-ui.com/) (headless, accessible primitives) styled with Tailwind CSS.
+Reusable UI components live in `src/components/ui/` — built on [Reka UI](https://reka-ui.com/) (headless, accessible primitives) styled with Tailwind CSS.
 
 | Component | Description |
 |---|---|
 | `Button` | Variants: default, outline, ghost, destructive; sizes: sm, md, lg |
 | `Input` | Styled text input |
-| `Label` | Form field label |
-| `Badge` | Status pills (colors map to job / application / pipeline status) |
-| `Card` | Container with `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`, `CardFooter` |
+| `Badge` | Status pills (colors map to job/application/pipeline status) |
+| `Card` | Container with Header, Title, Description, Content, Footer slots |
 | `Dialog` | Modal dialog with overlay |
 | `AlertDialog` | Confirmation dialog for destructive actions |
 | `DropdownMenu` | Contextual action menus |
@@ -358,19 +479,16 @@ Reusable UI components live in `src/components/ui/` and are built on [Reka UI](h
 | `Form` | Vee-Validate integrated form wrapper |
 | `Progress` | Progress bar (used in hiring stage visualization) |
 | `Avatar` | User/company avatar with fallback initials |
-| `Separator` | Horizontal/vertical divider |
 | `Sheet` | Side drawer panel |
 | `Skeleton` | Loading placeholder |
-| `Sonner` (Toaster) | Toast notifications — `toast.success()` / `toast.error()` |
-| `Sidebar` family | `Sidebar`, `SidebarContent`, `SidebarMenu`, `SidebarMenuItem`, etc. |
-| `Table` family | Data table primitives |
+| `Sonner` | Toast notifications — `toast.success()` / `toast.error()` |
+| `Sidebar` | Role-aware app navigation |
+| `Table` | Data table primitives |
 
 **Class merging utility:**
 
 ```ts
 import { cn } from '@/lib/utils'
-
-// Merges Tailwind classes and resolves conflicts
 cn('px-4 py-2', isActive && 'bg-blue-500', className)
 ```
 
@@ -385,7 +503,7 @@ Defined via CSS custom properties in `src/assets/main.css`.
 | Token | Usage |
 |---|---|
 | `--color-primary` | Deep Professional Blue — primary actions, CTAs |
-| `--color-primary-container` | Light primary background for cards/containers |
+| `--color-primary-container` | Light primary background for cards |
 | `--color-tertiary` | Emerald — success states, positive indicators |
 | `--color-surface` | Page background |
 | `--color-surface-container` | Card/panel background |
@@ -393,16 +511,14 @@ Defined via CSS custom properties in `src/assets/main.css`.
 | `--color-on-surface-variant` | Secondary/muted text |
 | `--color-destructive` | Error and destructive action red |
 
-Dark mode is applied via the `.dark` class on `<html>`, toggled by `ModeToggle.vue`.
+Dark mode via `.dark` class on `<html>`, toggled by `ModeToggle.vue`.
 
 ### Typography
 
-| Font | Role | Tailwind Class |
-|---|---|---|
-| Manrope | Headings, display text | `font-headline` |
-| Inter | Body text, UI labels | `font-body` |
-
-Both fonts are loaded from Google Fonts in `index.html`.
+| Font | Role |
+|---|---|
+| Manrope | Headings, display text (`font-headline`) |
+| Inter | Body text, UI labels (`font-body`) |
 
 ### Utility Classes
 
@@ -416,8 +532,8 @@ Both fonts are loaded from Google Fonts in `index.html`.
 
 ## Testing
 
-**Framework:** Vitest 4.1.0 with JSDOM environment
-**Component testing:** Vue Test Utils 2.4.6
+**Framework:** Vitest 4.1.0 with JSDOM environment  
+**Component testing:** Vue Test Utils 2.4.6  
 **Coverage:** v8
 
 ```bash
@@ -428,22 +544,24 @@ npm run test:unit
 npm run test:cov
 ```
 
-Test files follow the pattern `src/**/__tests__/**/*.spec.ts`.
-
-Configuration is in `vitest.config.ts`, which extends `vite.config.ts` so all path aliases and plugins apply in tests as well.
+Test files follow the pattern `src/**/__tests__/**/*.spec.ts`.  
+`vitest.config.ts` extends `vite.config.ts` so all path aliases apply in tests.
 
 ---
 
 ## Docker
 
-A `Dockerfile` is included for containerized deployment. The production build is served by Nginx using `nginx.conf`, which handles SPA routing (all unmatched paths fall back to `index.html`).
+Multi-stage `Dockerfile` — Node 22 builds the app, Nginx Alpine serves it.
 
 ```bash
 # Build the image
 docker build -t hireflow-frontend .
 
-# Run the container
-docker run -p 80:80 hireflow-frontend
+# Run locally
+docker run -p 8080:8080 hireflow-frontend
 ```
 
-The frontend container is included in the root `docker-compose.yml` alongside the backend services.
+Nginx config (`nginx.conf`) handles:
+- SPA routing — all unmatched paths fall back to `index.html`
+- Static asset caching — 1 year, immutable
+- `index.html` — never cached (`no-cache, no-store`)
